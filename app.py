@@ -1,116 +1,246 @@
-import os
+import streamlit as st
 import pandas as pd
-import xml.etree.ElementTree as ET
-from datetime import datetime
-from flask import Flask, render_template, request, send_file
-from werkzeug.utils import secure_filename
+import re
+import json
+from io import BytesIO
+import base64
 
-app = Flask(__name__)
-UPLOAD_FOLDER = "uploads"
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+# Configuração da página
+st.set_page_config(layout="wide", page_title="Sistema de Extração de Atributos Avançado")
 
-@app.route("/", methods=["GET", "POST"])
-def index():
-    resultados = []
-    if request.method == "POST":
-        files = request.files.getlist("xml_files")
-        for file in files:
-            if file.filename.lower().endswith(".xml"):
-                path = os.path.join(UPLOAD_FOLDER, secure_filename(file.filename))
-                file.save(path)
-                dados = processar_cte(path)
-                if dados:
-                    resultados.append(dados)
-        if resultados:
-            df = pd.DataFrame(resultados)
-            output_path = os.path.join("resultado.xlsx")
-            df.to_excel(output_path, index=False)
-            return send_file(output_path, as_attachment=True)
-    return render_template("index.html")
+# Palavras para ignorar (inicial)
+DEFAULT_STOPWORDS = {
+    'de', 'para', 'com', 'sem', 'em', 'por', 'que', 'os', 'as', 'um', 'uma',
+    'ao', 'aos', 'do', 'da', 'dos', 'das', 'no', 'na', 'nos', 'nas', 'pelo',
+    'pela', 'pelos', 'pelas', 'este', 'esta', 'estes', 'estas', 'esse',
+    'essa', 'esses', 'essas', 'aquele', 'aquela', 'aqueles', 'aquelas',
+    'ou', 'e', 'mas', 'porém', 'entretanto', 'contudo', 'quando', 'enquanto',
+    'como', 'porque', 'pois', 'assim', 'então', 'logo', 'portanto', 'desse',
+    'dessa', 'destes', 'destas', 'deste', 'isso', 'isto', 'aquilo'
+}
 
-def formatar_cnpj(cnpj):
-    if cnpj and len(cnpj) == 14:
-        return f"{cnpj[:2]}.{cnpj[2:5]}.{cnpj[5:8]}/{cnpj[8:12]}-{cnpj[12:14]}"
-    return cnpj
+class ExtratorAtributos:
+    def __init__(self):
+        self.atributos = {}
+        self.dados_processados = pd.DataFrame()
+        self.etapa_configuracao = 0  # 0=nome, 1=variações, 2=padrões, 3=prioridade, 4=formato
+        self.atributo_atual = {}
+        
+        if 'atributos' not in st.session_state:
+            st.session_state.atributos = {}
+        
+        self.setup_ui()
+    
+    def setup_ui(self):
+        st.title("Sistema de Extração de Atributos Avançado")
+        
+        # Abas principais
+        tab1, tab2, tab3 = st.tabs(["Modelo e Upload", "Configuração", "Resultados"])
+        
+        with tab1:
+            self.setup_aba_modelo()
+        with tab2:
+            self.setup_aba_configuracao()
+        with tab3:
+            self.setup_aba_resultados()
+    
+    def setup_aba_modelo(self):
+        st.header("Modelo e Upload")
+        
+        # Seção para modelo
+        with st.expander("Gerar Modelo de Planilha", expanded=True):
+            st.download_button(
+                "⬇️ Baixar Modelo Excel",
+                data=self.gerar_modelo(),
+                file_name="modelo_descricoes.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        
+        # Seção para upload
+        with st.expander("Upload de Planilha", expanded=True):
+            uploaded_file = st.file_uploader("Selecione a planilha (Excel)", type=["xlsx", "xls"])
+            
+            if uploaded_file is not None:
+                try:
+                    self.dados_originais = pd.read_excel(uploaded_file)
+                    
+                    if 'ID' not in self.dados_originais.columns or 'Descrição' not in self.dados_originais.columns:
+                        st.error("A planilha deve conter as colunas 'ID' e 'Descrição'")
+                    else:
+                        st.success(f"Planilha carregada com sucesso! ({len(self.dados_originais)} registros)")
+                        st.dataframe(self.dados_originais.head())
+                except Exception as e:
+                    st.error(f"Erro ao carregar planilha: {str(e)}")
+    
+    def setup_aba_configuracao(self):
+        st.header("Configuração de Atributos")
+        
+        # Seção de configuração dinâmica
+        with st.expander("Configurar Novo Atributo", expanded=True):
+            self.atualizar_interface_configuracao()
+        
+        # Seção para importar/exportar configurações
+        with st.expander("Importar/Exportar Configurações", expanded=False):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                uploaded_config = st.file_uploader("Importar configurações", type=["json"])
+                if uploaded_config is not None:
+                    self.importar_configuracoes(uploaded_config)
+            
+            with col2:
+                if st.button("Exportar Configurações Atuais"):
+                    self.exportar_configuracoes()
+        
+        # Lista de atributos configurados
+        with st.expander("Atributos Configurados", expanded=True):
+            if not st.session_state.get('atributos', {}):
+                st.info("Nenhum atributo configurado ainda")
+            else:
+                for nome, config in st.session_state.atributos.items():
+                    with st.container():
+                        col1, col2, col3 = st.columns([4, 1, 1])
+                        
+                        with col1:
+                            st.subheader(nome)
+                            st.caption(f"Variações: {', '.join([v['descricao'] for v in config['variacoes']])}")
+                            st.caption(f"Formato: {'Valor' if config['tipo_retorno'] == 'valor' else 'Texto' if config['tipo_retorno'] == 'texto' else 'Completo'}")
+                        
+                        with col2:
+                            if st.button("Editar", key=f"edit_{nome}"):
+                                self.editar_atributo(nome)
+                        
+                        with col3:
+                            if st.button("Remover", key=f"remove_{nome}"):
+                                self.remover_atributo(nome)
+    
+    def setup_aba_resultados(self):
+        st.header("Resultados da Extração")
+        
+        if not hasattr(self, 'dados_processados') or self.dados_processados.empty:
+            st.info("Processe os dados primeiro na aba 'Configuração'")
+            return
+        
+        st.dataframe(self.dados_processados)
+        
+        st.download_button(
+            "📥 Exportar Resultados",
+            data=self.exportar_resultados(),
+            file_name="resultados_extracao.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    
+    def atualizar_interface_configuracao(self):
+        # Controles de navegação
+        col1, col2, col3 = st.columns([1, 1, 2])
+        
+        with col1:
+            if st.button("← Voltar", disabled=self.etapa_configuracao == 0):
+                self.etapa_configuracao -= 1
+                st.experimental_rerun()
+        
+        with col2:
+            btn_avancar = st.button(self.get_texto_botao_avancar())
+        
+        with col3:
+            if st.button("Cancelar Configuração"):
+                self.cancelar_configuracao()
+        
+        # Exibe o passo atual
+        if self.etapa_configuracao == 0:
+            self.passo_nome_atributo()
+        elif self.etapa_configuracao == 1:
+            self.passo_variacoes()
+        elif self.etapa_configuracao == 2:
+            self.passo_padroes()
+        elif self.etapa_configuracao == 3:
+            self.passo_prioridade()
+        elif self.etapa_configuracao == 4:
+            self.passo_formato()
+        
+        # Lógica do botão avançar
+        if btn_avancar:
+            try:
+                if self.etapa_configuracao == 0:
+                    self.validar_passo_nome()
+                elif self.etapa_configuracao == 1:
+                    self.validar_passo_variacoes()
+                elif self.etapa_configuracao == 2:
+                    self.validar_passo_padroes()
+                elif self.etapa_configuracao == 3:
+                    self.validar_passo_prioridade()
+                elif self.etapa_configuracao == 4:
+                    self.validar_passo_formato()
+                
+                self.etapa_configuracao += 1
+                if self.etapa_configuracao > 4:
+                    self.finalizar_configuracao()
+                    return
+                
+                st.experimental_rerun()
+            except Exception as e:
+                st.error(str(e))
+    
+    # [Métodos auxiliares para cada passo da configuração...]
+    # Implementar todos os métodos necessários seguindo o mesmo padrão
+    
+    def processar_dados(self):
+        if not hasattr(self, 'dados_originais'):
+            st.error("Por favor, carregue uma planilha primeiro")
+            return
+        
+        if not st.session_state.get('atributos', {}):
+            st.error("Por favor, configure pelo menos um atributo")
+            return
+        
+        try:
+            self.dados_processados = self.dados_originais.copy()
+            progress_bar = st.progress(0)
+            
+            for i, (atributo_nome, config) in enumerate(st.session_state.atributos.items()):
+                tipo_retorno = config['tipo_retorno']
+                variacoes = config['variacoes']
+                
+                # Prepara regex para cada variação
+                regex_variacoes = []
+                for variacao in variacoes:
+                    padroes_escaped = [re.escape(p) for p in variacao['padroes']]
+                    regex = r'\b(' + '|'.join(padroes_escaped) + r')\b'
+                    regex_variacoes.append((regex, variacao['descricao']))
+                
+                self.dados_processados[atributo_nome] = ""
+                
+                for idx, row in self.dados_processados.iterrows():
+                    descricao = str(row['Descrição']).lower()
+                    resultado = None
+                    
+                    # Verifica cada variação na ordem de prioridade
+                    for regex, desc_padrao in regex_variacoes:
+                        match = re.search(regex, descricao, re.IGNORECASE)
+                        if match:
+                            resultado = self.formatar_resultado(
+                                match.group(1),
+                                tipo_retorno,
+                                atributo_nome,
+                                desc_padrao
+                            )
+                            break  # Usa a primeira correspondência (maior prioridade)
+                    
+                    self.dados_processados.at[idx, atributo_nome] = resultado if resultado else ""
+                    progress = (idx + 1) / len(self.dados_processados)
+                    progress_bar.progress(progress)
+            
+            st.success("Processamento concluído com sucesso!")
+            st.experimental_rerun()
+        
+        except Exception as e:
+            st.error(f"Falha ao processar dados: {str(e)}")
+    
+    # [Implementar todos os outros métodos necessários...]
 
-def formatar_cep(cep):
-    if cep and len(cep) == 8:
-        return f"{cep[:5]}-{cep[5:8]}"
-    return cep
-
-def formatar_data(data_str):
-    try:
-        if 'T' in data_str:
-            data = datetime.strptime(data_str.split('T')[0], "%Y-%m-%d")
-            return data.strftime("%d/%m/%Y")
-        return data_str
-    except:
-        return data_str
-
-def formatar_moeda(valor):
-    try:
-        return f"R$ {float(valor):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    except:
-        return "R$ 0,00"
-
-def processar_cte(xml_path):
-    try:
-        ns = {'cte': 'http://www.portalfiscal.inf.br/cte'}
-        tree = ET.parse(xml_path)
-        root = tree.getroot()
-        cte_proc = root.find('.//cte:CTe', ns) or root
-
-        ide = cte_proc.find('.//cte:ide', ns)
-        emit = cte_proc.find('.//cte:emit', ns)
-        rem = cte_proc.find('.//cte:rem', ns)
-        dest = cte_proc.find('.//cte:dest', ns)
-        infCarga = cte_proc.find('.//cte:infCarga', ns)
-        vPrest = cte_proc.find('.//cte:vPrest/cte:vTPrest', ns)
-        infNFe = cte_proc.find('.//cte:infNFe', ns)
-        protCTe = root.find('.//cte:protCTe', ns)
-
-        peso = 0.0
-        for infQ in cte_proc.findall('.//cte:infQ', ns):
-            tpMed = infQ.find('cte:tpMed', ns)
-            if tpMed is not None and 'PESO' in tpMed.text.upper():
-                qCarga = infQ.find('cte:qCarga', ns)
-                if qCarga is not None:
-                    try:
-                        peso = max(peso, float(qCarga.text))
-                    except:
-                        pass
-
-        status = "Autorizado" if protCTe is not None else "Não autorizado"
-
-        return {
-            'Número CT-e': ide.find('cte:nCT', ns).text if ide is not None else '',
-            'Chave CT-e': cte_proc.find('.//cte:infCte', ns).get('Id')[3:] if cte_proc.find('.//cte:infCte', ns) is not None else '',
-            'CNPJ Emitente': formatar_cnpj(emit.find('cte:CNPJ', ns).text if emit is not None and emit.find('cte:CNPJ', ns) is not None else ''),
-            'Nome Emitente': emit.find('cte:xNome', ns).text if emit is not None and emit.find('cte:xNome', ns) is not None else '',
-            'CEP Emitente': formatar_cep(emit.find('cte:enderEmit/cte:CEP', ns).text if emit is not None and emit.find('cte:enderEmit/cte:CEP', ns) is not None else ''),
-            'Cidade Emitente': emit.find('cte:enderEmit/cte:xMun', ns).text if emit is not None and emit.find('cte:enderEmit/cte:xMun', ns) is not None else '',
-            'UF Emitente': emit.find('cte:enderEmit/cte:UF', ns).text if emit is not None and emit.find('cte:enderEmit/cte:UF', ns) is not None else '',
-            'CNPJ Remetente': formatar_cnpj(rem.find('cte:CNPJ', ns).text if rem is not None and rem.find('cte:CNPJ', ns) is not None else ''),
-            'Nome Remetente': rem.find('cte:xNome', ns).text if rem is not None and rem.find('cte:xNome', ns) is not None else '',
-            'CEP Remetente': formatar_cep(rem.find('cte:enderReme/cte:CEP', ns).text if rem is not None and rem.find('cte:enderReme/cte:CEP', ns) is not None else ''),
-            'Cidade Remetente': rem.find('cte:enderReme/cte:xMun', ns).text if rem is not None and rem.find('cte:enderReme/cte:xMun', ns) is not None else '',
-            'UF Remetente': rem.find('cte:enderReme/cte:UF', ns).text if rem is not None and rem.find('cte:enderReme/cte:UF', ns) is not None else '',
-            'CNPJ Destinatário': formatar_cnpj(dest.find('cte:CNPJ', ns).text if dest is not None and dest.find('cte:CNPJ', ns) is not None else ''),
-            'Nome Destinatário': dest.find('cte:xNome', ns).text if dest is not None and dest.find('cte:xNome', ns) is not None else '',
-            'CEP Destinatário': formatar_cep(dest.find('cte:enderDest/cte:CEP', ns).text if dest is not None and dest.find('cte:enderDest/cte:CEP', ns) is not None else ''),
-            'Cidade Destinatário': dest.find('cte:enderDest/cte:xMun', ns).text if dest is not None and dest.find('cte:enderDest/cte:xMun', ns) is not None else '',
-            'UF Destinatário': dest.find('cte:enderDest/cte:UF', ns).text if dest is not None and dest.find('cte:enderDest/cte:UF', ns) is not None else '',
-            'Valor Carga': formatar_moeda(infCarga.find('cte:vCarga', ns).text if infCarga is not None and infCarga.find('cte:vCarga', ns) is not None else '0'),
-            'Valor Frete': formatar_moeda(vPrest.text if vPrest is not None else '0'),
-            'Chave Carga': infNFe.find('cte:chave', ns).text if infNFe is not None and infNFe.find('cte:chave', ns) is not None else '',
-            'Número Carga': ide.find('cte:nCT', ns).text if ide is not None else '',
-            'Peso (kg)': f"{peso:.3f}",
-            'Data Emissão': formatar_data(ide.find('cte:dhEmi', ns).text if ide is not None and ide.find('cte:dhEmi', ns) is not None else ''),
-            'Status': status
-        }
-    except Exception as e:
-        print(f"Erro ao processar {xml_path}: {str(e)}")
-        return None
+# Função principal para execução no Streamlit
+def main():
+    extrator = ExtratorAtributos()
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+    main()
