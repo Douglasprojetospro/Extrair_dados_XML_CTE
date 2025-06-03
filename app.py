@@ -149,4 +149,22 @@ def main():
             st.warning("Nenhum dado válido encontrado nos arquivos")
 
 if __name__ == "__main__":
-    main()
+    # Configuração especial para deploy no Render
+    import sys
+    
+    if len(sys.argv) > 1 and sys.argv[1] == "run":
+        # Configurações específicas para produção
+        from streamlit.web.cli import main as st_main
+        sys.argv = [
+            "streamlit",
+            "run",
+            "app.py",
+            "--server.port=8501",
+            "--server.address=0.0.0.0",
+            "--server.headless=true",
+            "--browser.gatherUsageStats=false"
+        ]
+        st_main()
+    else:
+        # Modo de desenvolvimento local
+        main()
