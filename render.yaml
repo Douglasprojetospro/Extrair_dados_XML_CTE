@@ -1,1 +1,6 @@
-
+services:
+  - type: web
+    name: extrator-atributos
+    runtime: python
+    buildCommand: "poetry install --no-dev && pip install streamlit"
+    startCommand: "streamlit run app.py --server.port=10000 --server.address=0.0.0.0"
