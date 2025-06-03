@@ -1,35 +1,21 @@
-# Configuração para deploy no Render.com
-# Documentação: https://render.com/docs/deploy-streamlit
-
 services:
   - type: web
     name: extrator-atributos-web
     runtime: python
     pythonVersion: "3.11.11"
     buildCommand: |
-      pip install --upgrade pip &&
-      pip install poetry &&
-      poetry install --no-dev &&
-      pip install streamlit pandas openpyxl XlsxWriter
-    startCommand: python -m streamlit run app.py --server.port=10000 --server.address=0.0.0.0
+      pip install --upgrade pip
+      pip install -r requirements.txt
+    startCommand: streamlit run app.py --server.port=10000 --server.address=0.0.0.0
     envVars:
       - key: PYTHONUNBUFFERED
-        value: TRUE
+        value: "TRUE"
       - key: STREAMLIT_SERVER_HEADLESS
-        value: TRUE
-    plan: free  # Ou 'starter' para recursos adicionais
-    healthCheckPath: /_healthcheck
+        value: "TRUE"
+    plan: free
+    healthCheckPath: /
     autoDeploy: true
 
-# Configurações de cache para melhor performance
 cache:
   paths:
     - /opt/render/.cache/pip
-    - /opt/render/.cache/poetry
-
-# Hooks adicionais (opcional)
-hooks:
-  preDeploy:
-    - python --version
-    - pip list
-    - streamlit --version
