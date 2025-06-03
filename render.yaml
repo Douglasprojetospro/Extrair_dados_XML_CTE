@@ -2,12 +2,18 @@ services:
   - type: web
     name: extrator-atributos-web
     runtime: python
-    pythonVersion: "3.11"
+    pythonVersion: "3.11.11"
     buildCommand: pip install -r requirements.txt
     startCommand: streamlit run app.py --server.port=10000 --server.address=0.0.0.0
-    plan: free
     envVars:
-      - key: STREAMLIT_SERVER_HEADLESS
-        value: "true"
       - key: PYTHONUNBUFFERED
-        value: "true"
+        value: TRUE
+      - key: STREAMLIT_SERVER_HEADLESS
+        value: TRUE
+    plan: free
+    healthCheckPath: /_healthcheck
+    autoDeploy: true
+
+cache:
+  paths:
+    - /opt/render/.cache/pip
