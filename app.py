@@ -68,7 +68,7 @@ if dados_originais is not None and st.session_state['atributos']:
         variacoes = config['variacoes']
         regex_variacoes = []
         for var in variacoes:
-            regex = r"\\b(" + "|".join(re.escape(p) for p in var['padroes']) + r")\\b"
+            regex = r"\b(" + "|".join(re.escape(p) for p in var['padroes']) + r")\b"
             regex_variacoes.append((regex, var['descricao']))
         resultados = []
         for desc in dados_processados['Descrição']:
@@ -78,7 +78,7 @@ if dados_originais is not None and st.session_state['atributos']:
                 match = re.search(regex, desc_lower, re.IGNORECASE)
                 if match:
                     if tipo_retorno == "valor":
-                        numeros = re.findall(r"\\d+", match.group(1))
+                        numeros = re.findall(r"\d+", match.group(1))
                         valor = numeros[0] if numeros else ""
                     elif tipo_retorno == "texto":
                         valor = descricao
@@ -92,15 +92,13 @@ if dados_originais is not None and st.session_state['atributos']:
 
     buffer = io.BytesIO()
     dados_processados.to_excel(buffer, index=False)
+    buffer.seek(0)
+
     st.download_button(
         label="📥 Baixar Resultados",
         data=buffer,
         file_name="resultados_extracao.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
-
 else:
     st.info("Envie uma planilha e configure os atributos para iniciar a extração.")
-    
-    # Inicia a aplicação
-    app = ExtratorAtributos()
