@@ -83,7 +83,7 @@ class CTeProcessor:
                 'UF Emitente': emit.find('cte:enderEmit/cte:UF', ns).text if emit is not None and emit.find('cte:enderEmit/cte:UF', ns) is not None else '',
                 'CNPJ Remetente': self.formatar_cnpj(rem.find('cte:CNPJ', ns).text if rem is not None and rem.find('cte:CNPJ', ns) is not None else ''),
                 'Nome Remetente': rem.find('cte:xNome', ns).text if rem is not None and rem.find('cte:xNome', ns) is not None else '',
-                'CEP Remetente': self.formatar_cep(rem.find('cte:enderReme/cte:CEP', ns).text if rem is not None and rem.find('cte:enderReme/cte:CEP', ns) is not None else '',
+                'CEP Remetente': self.formatar_cep(rem.find('cte:enderReme/cte:CEP', ns).text if rem is not None and rem.find('cte:enderReme/cte:CEP', ns) is not None else ''),
                 'Cidade Remetente': rem.find('cte:enderReme/cte:xMun', ns).text if rem is not None and rem.find('cte:enderReme/cte:xMun', ns) is not None else '',
                 'UF Remetente': rem.find('cte:enderReme/cte:UF', ns).text if rem is not None and rem.find('cte:enderReme/cte:UF', ns) is not None else '',
                 'CNPJ Destinatário': self.formatar_cnpj(dest.find('cte:CNPJ', ns).text if dest is not None and dest.find('cte:CNPJ', ns) is not None else ''),
@@ -94,7 +94,7 @@ class CTeProcessor:
                 'Valor Carga': self.formatar_moeda(infCarga.find('cte:vCarga', ns).text if infCarga is not None and infCarga.find('cte:vCarga', ns) is not None else '0'),
                 'Valor Frete': self.formatar_moeda(vPrest.text if vPrest is not None else '0'),
                 'Chave Carga': infNFe.find('cte:chave', ns).text if infNFe is not None and infNFe.find('cte:chave', ns) is not None else '',
-                'Número Carga': ide.find('cte:nCT', ns).text if ide is not None else '',  # Usando número do CT-e como proxy
+                'Número Carga': ide.find('cte:nCT', ns).text if ide is not None else '',
                 'Peso (kg)': f"{peso:.3f}",
                 'Data Emissão': self.formatar_data(ide.find('cte:dhEmi', ns).text if ide is not None and ide.find('cte:dhEmi', ns) is not None else ''),
                 'Status': status
@@ -220,14 +220,34 @@ class CTeProcessor:
                     
                     if hasattr(self, 'resultados_df') and not self.resultados_df.empty:
                         st.session_state.df_processed = True
-                        st.dataframe(self.resultados_df)
+                        
+                        # Mostrar dados em tabela
+                        st.subheader("Resultados do Processamento")
+                        st.dataframe(
+                            self.resultados_df,
+                            height=600,
+                            use_container_width=True
+                        )
+                        
+                        # Mostrar estatísticas
+                        st.subheader("Estatísticas")
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric("Total de CT-es", len(self.resultados_df))
+                        with col2:
+                            total_frete = self.resultados_df['Valor Frete'].str.replace('R\$ ', '').str.replace('.', '').str.replace(',', '.').astype(float).sum()
+                            st.metric("Valor Total de Frete", f"R$ {total_frete:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.'))
+                        with col3:
+                            total_peso = self.resultados_df['Peso (kg)'].astype(float).sum()
+                            st.metric("Peso Total (kg)", f"{total_peso:,.3f}".replace(',', 'X').replace('.', ',').replace('X', '.'))
                     else:
                         st.warning("Nenhum dado válido foi processado.")
             else:
                 st.warning("Por favor, carregue arquivos XML ou informe um caminho de pasta válido.")
         
         # Botão de exportação
-        if st.sidebar.button("Exportar para Excel") and hasattr(self, 'resultados_df') and not self.resultados_df.empty:
+        if hasattr(self, 'resultados_df') and not self.resultados_df.empty:
+            st.sidebar.subheader("Exportar Resultados")
             excel_data = self.exportar_excel(self.resultados_df)
             st.sidebar.download_button(
                 label="📥 Baixar Excel",
