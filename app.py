@@ -114,9 +114,8 @@ def gerar_relatorio(dados):
 def formatar_excel(writer, df):
     """Formata o arquivo Excel com estilos e organização"""
     workbook = writer.book
-    # Obtém o nome da primeira planilha
-    worksheet_name = writer.sheets.sheetnames[0]
-    worksheet = writer.sheets[worksheet_name]
+    # Acessa a planilha corretamente (método diferente para xlsxwriter)
+    worksheet = writer.sheets['CT-es']
     
     # Formatação para cabeçalho
     header_format = workbook.add_format({
@@ -253,7 +252,9 @@ def app():
             
             excel_data = BytesIO()
             with pd.ExcelWriter(excel_data, engine="xlsxwriter") as writer:
+                # Definimos explicitamente o nome da planilha
                 final_df.to_excel(writer, index=False, sheet_name='CT-es')
+                # Chamamos a função de formatação
                 formatar_excel(writer, final_df)
             
             st.sidebar.download_button(
