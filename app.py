@@ -1,248 +1,187 @@
-from flask import Flask, request, send_file, jsonify, render_template_string
-from lxml import etree
-import pandas as pd
-from io import BytesIO
 import os
+import pandas as pd
+import xml.etree.ElementTree as ET
 from datetime import datetime
-import logging
+from flask import Flask, render_template, request, send_file, jsonify
+from werkzeug.utils import secure_filename
+from io import BytesIO
 
-# Configuração básica do Flask
 app = Flask(__name__)
+app.config['UPLOAD_FOLDER'] = 'uploads'
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB
 
-# Configuração de logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Certifique-se de que a pasta de uploads existe
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
-def parse_cte(xml_content):
-    """Processa o XML do CT-e e extrai os dados principais com tratamento de erros"""
-    try:
-        # Decodificação segura do conteúdo
-        if isinstance(xml_content, bytes):
+class CTeProcessor:
+    def __init__(self):
+        self.resultados_df = pd.DataFrame()
+
+    def formatar_cnpj(self, cnpj):
+        """Formata CNPJ com pontuação"""
+        if cnpj and len(cnpj) == 14:
+            return f"{cnpj[:2]}.{cnpj[2:5]}.{cnpj[5:8]}/{cnpj[8:12]}-{cnpj[12:14]}"
+        return cnpj
+
+    def formatar_cep(self, cep):
+        """Formata CEP com hífen"""
+        if cep and len(cep) == 8:
+            return f"{cep[:5]}-{cep[5:8]}"
+        return cep
+
+    def formatar_data(self, data_str):
+        """Formata data para padrão brasileiro"""
+        try:
+            if 'T' in data_str:
+                data = datetime.strptime(data_str.split('T')[0], "%Y-%m-%d")
+                return data.strftime("%d/%m/%Y")
+            return data_str
+        except:
+            return data_str
+
+    def formatar_moeda(self, valor):
+        """Formata valores para o padrão monetário brasileiro"""
+        try:
+            return f"R$ {float(valor):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        except:
+            return "R$ 0,00"
+
+    def processar_cte(self, xml_path):
+        """Extrai os dados do CT-e do arquivo XML"""
+        try:
+            ns = {'cte': 'http://www.portalfiscal.inf.br/cte'}
+            tree = ET.parse(xml_path)
+            root = tree.getroot()
+
+            # Verifica se é um CT-e processado (cteProc)
+            cte_proc = root.find('.//cte:CTe', ns) or root
+
+            # Dados básicos
+            ide = cte_proc.find('.//cte:ide', ns)
+            emit = cte_proc.find('.//cte:emit', ns)
+            rem = cte_proc.find('.//cte:rem', ns)
+            dest = cte_proc.find('.//cte:dest', ns)
+            infCarga = cte_proc.find('.//cte:infCarga', ns)
+            vPrest = cte_proc.find('.//cte:vPrest/cte:vTPrest', ns)
+            infNFe = cte_proc.find('.//cte:infNFe', ns)
+            protCTe = root.find('.//cte:protCTe', ns)
+
+            # Extrair peso (procura por PESO REAL ou PESO BASE DE CALCULO)
+            peso = 0.0
+            for infQ in cte_proc.findall('.//cte:infQ', ns):
+                tpMed = infQ.find('cte:tpMed', ns)
+                if tpMed is not None and 'PESO' in tpMed.text.upper():
+                    qCarga = infQ.find('cte:qCarga', ns)
+                    if qCarga is not None:
+                        try:
+                            peso = max(peso, float(qCarga.text))
+                        except:
+                            pass
+
+            # Status do CT-e
+            status = "Autorizado" if protCTe is not None else "Não autorizado"
+
+            return {
+                'Número CT-e': ide.find('cte:nCT', ns).text if ide is not None else '',
+                'Chave CT-e': cte_proc.find('.//cte:infCte', ns).get('Id')[3:] if cte_proc.find('.//cte:infCte', ns) is not None else '',
+                'CNPJ Emitente': self.formatar_cnpj(emit.find('cte:CNPJ', ns).text if emit is not None and emit.find('cte:CNPJ', ns) is not None else ''),
+                'Nome Emitente': emit.find('cte:xNome', ns).text if emit is not None and emit.find('cte:xNome', ns) is not None else '',
+                'CEP Emitente': self.formatar_cep(emit.find('cte:enderEmit/cte:CEP', ns).text if emit is not None and emit.find('cte:enderEmit/cte:CEP', ns) is not None else ''),
+                'Cidade Emitente': emit.find('cte:enderEmit/cte:xMun', ns).text if emit is not None and emit.find('cte:enderEmit/cte:xMun', ns) is not None else '',
+                'UF Emitente': emit.find('cte:enderEmit/cte:UF', ns).text if emit is not None and emit.find('cte:enderEmit/cte:UF', ns) is not None else '',
+                'CNPJ Remetente': self.formatar_cnpj(rem.find('cte:CNPJ', ns).text if rem is not None and rem.find('cte:CNPJ', ns) is not None else ''),
+                'Nome Remetente': rem.find('cte:xNome', ns).text if rem is not None and rem.find('cte:xNome', ns) is not None else '',
+                'CEP Remetente': self.formatar_cep(rem.find('cte:enderReme/cte:CEP', ns).text if rem is not None and rem.find('cte:enderReme/cte:CEP', ns) is not None else ''),
+                'Cidade Remetente': rem.find('cte:enderReme/cte:xMun', ns).text if rem is not None and rem.find('cte:enderReme/cte:xMun', ns) is not None else '',
+                'UF Remetente': rem.find('cte:enderReme/cte:UF', ns).text if rem is not None and rem.find('cte:enderReme/cte:UF', ns) is not None else '',
+                'CNPJ Destinatário': self.formatar_cnpj(dest.find('cte:CNPJ', ns).text if dest is not None and dest.find('cte:CNPJ', ns) is not None else ''),
+                'Nome Destinatário': dest.find('cte:xNome', ns).text if dest is not None and dest.find('cte:xNome', ns) is not None else '',
+                'CEP Destinatário': self.formatar_cep(dest.find('cte:enderDest/cte:CEP', ns).text if dest is not None and dest.find('cte:enderDest/cte:CEP', ns) is not None else ''),
+                'Cidade Destinatário': dest.find('cte:enderDest/cte:xMun', ns).text if dest is not None and dest.find('cte:enderDest/cte:xMun', ns) is not None else '',
+                'UF Destinatário': dest.find('cte:enderDest/cte:UF', ns).text if dest is not None and dest.find('cte:enderDest/cte:UF', ns) is not None else '',
+                'Valor Carga': self.formatar_moeda(infCarga.find('cte:vCarga', ns).text if infCarga is not None and infCarga.find('cte:vCarga', ns) is not None else '0'),
+                'Valor Frete': self.formatar_moeda(vPrest.text if vPrest is not None else '0'),
+                'Chave Carga': infNFe.find('cte:chave', ns).text if infNFe is not None and infNFe.find('cte:chave', ns) is not None else '',
+                'Número Carga': ide.find('cte:nCT', ns).text if ide is not None else '',  # Usando número do CT-e como proxy
+                'Peso (kg)': f"{peso:.3f}",
+                'Data Emissão': self.formatar_data(ide.find('cte:dhEmi', ns).text if ide is not None and ide.find('cte:dhEmi', ns) is not None else ''),
+                'Status': status
+            }
+        except Exception as e:
+            print(f"Erro ao processar CT-e: {str(e)}")
+            return None
+
+    def processar_arquivos(self, arquivos):
+        """Processa múltiplos arquivos XML"""
+        resultados = []
+        
+        for arquivo in arquivos:
             try:
-                xml_content = xml_content.decode('utf-8')
-            except UnicodeDecodeError:
-                xml_content = xml_content.decode('latin-1')
+                caminho = os.path.join(app.config['UPLOAD_FOLDER'], secure_filename(arquivo.filename))
+                arquivo.save(caminho)
+                dados = self.processar_cte(caminho)
+                if dados:
+                    resultados.append(dados)
+                # Remove o arquivo após processamento
+                os.remove(caminho)
+            except Exception as e:
+                print(f"Erro ao processar {arquivo.filename}: {str(e)}")
 
-        # Parse do XML
-        root = etree.fromstring(xml_content)
-        
-        # Namespaces alternativos para compatibilidade
-        ns = {
-            'cte': 'http://www.portalfiscal.inf.br/cte',
-            'ns2': 'http://www.portalfiscal.inf.br/cte'
-        }
-        
-        # Função auxiliar para extração segura
-        def safe_xpath(path, default='N/A'):
-            for namespace in [ns['cte'], ns['ns2']]:
-                result = root.xpath(path.replace('cte:', f'{namespace.split("/")[-1]}:'), namespaces={'ns': namespace})
-                if result:
-                    return result[0]
-            return default
+        if resultados:
+            self.resultados_df = pd.DataFrame(resultados)
+            return True
+        return False
 
-        # Dados essenciais do CT-e
-        data = {
-            'Número CT-e': safe_xpath('//cte:infCte/cte:ide/cte:nCT/text()'),
-            'Série': safe_xpath('//cte:infCte/cte:ide/cte:serie/text()'),
-            'Chave de Acesso': safe_xpath('//cte:infCte/@Id', '').replace('CTe', ''),
-            'Data Emissão': safe_xpath('//cte:infCte/cte:ide/cte:dhEmi/text()'),
-            'Valor Total': safe_xpath('//cte:infCte/cte:vRec/text()', '0.00'),
-            'Remetente': safe_xpath('//cte:rem/cte:xNome/text()'),
-            'Destinatário': safe_xpath('//cte:dest/cte:xNome/text()'),
-            'UF Origem': safe_xpath('//cte:infCte/cte:ide/cte:UFIni/text()'),
-            'Município Origem': safe_xpath('//cte:infCte/cte:ide/cte:municIni/text()'),
-            'UF Destino': safe_xpath('//cte:infCte/cte:ide/cte:UFFim/text()'),
-            'Município Destino': safe_xpath('//cte:infCte/cte:ide/cte:municFim/text()')
-        }
-        
-        # Campos calculados
-        data['Origem'] = f"{data['UF Origem']} - {data['Município Origem']}"
-        data['Destino'] = f"{data['UF Destino']} - {data['Município Destino']}"
-        
-        return data
-        
-    except Exception as e:
-        logger.error(f"Erro no parse_cte: {str(e)}")
-        return {'error': f'Falha ao processar XML: {str(e)}'}
-
-def generate_excel(data):
-    """Gera o arquivo Excel formatado a partir dos dados"""
-    try:
-        # Criação do DataFrame
-        df = pd.DataFrame([data])
-        
-        # Ordenação e seleção de colunas
-        columns_order = [
-            'Número CT-e', 'Série', 'Chave de Acesso', 'Data Emissão', 'Valor Total',
-            'Remetente', 'Destinatário', 'Origem', 'Destino'
-        ]
-        df = df[columns_order]
-        
-        # Geração do Excel em memória
+    def exportar_excel(self):
+        """Exporta os resultados para Excel em memória"""
         output = BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df.to_excel(writer, index=False, sheet_name='CT-e')
-            
-            # Formatação automática das colunas
-            worksheet = writer.sheets['CT-e']
-            for col in worksheet.columns:
-                max_length = max(len(str(cell.value)) for cell in col)
-                worksheet.column_dimensions[col[0].column_letter].width = max_length + 2
-        
+        writer = pd.ExcelWriter(output, engine='xlsxwriter')
+        self.resultados_df.to_excel(writer, index=False)
+        writer.save()
         output.seek(0)
         return output
-        
-    except Exception as e:
-        logger.error(f"Erro no generate_excel: {str(e)}")
-        return None
 
-@app.route('/')
-def home():
-    """Rota principal com interface HTML"""
-    return render_template_string('''
-    <!DOCTYPE html>
-    <html lang="pt-BR">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Processador de CT-e</title>
-        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
-        <style>
-            .container { max-width: 800px; margin-top: 50px; }
-            .logo { text-align: center; margin-bottom: 30px; }
-            .card { border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
-            .loading { display: none; text-align: center; margin: 20px 0; }
-            #errorAlert { display: none; }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <div class="logo">
-                <h1 class="text-primary">📄 Processador de CT-e</h1>
-                <p class="text-muted">Converta seus CT-e XML para Excel automaticamente</p>
-            </div>
-            
-            <div class="card">
-                <div class="card-body">
-                    <h5 class="card-title">Envie seu CT-e</h5>
-                    <form id="uploadForm" enctype="multipart/form-data">
-                        <div class="mb-3">
-                            <input class="form-control" type="file" name="file" accept=".xml" required>
-                            <div class="form-text">Apenas arquivos XML no padrão CT-e</div>
-                        </div>
-                        <button type="submit" class="btn btn-primary w-100" id="submitBtn">
-                            <span id="submitText">Processar</span>
-                            <span id="spinner" class="spinner-border spinner-border-sm d-none"></span>
-                        </button>
-                    </form>
-                    <div id="errorAlert" class="alert alert-danger mt-3 d-none"></div>
-                </div>
-            </div>
+cte_processor = CTeProcessor()
 
-            <div id="loading" class="loading">
-                <div class="spinner-border text-primary"></div>
-                <p class="mt-2">Processando seu arquivo...</p>
-            </div>
-
-            <div id="resultSection" class="card mt-3 d-none">
-                <div class="card-body text-center">
-                    <h5 class="text-success">✅ Pronto!</h5>
-                    <a id="downloadLink" href="#" class="btn btn-success mt-2">
-                        <i class="bi bi-download"></i> Baixar Planilha
-                    </a>
-                </div>
-            </div>
-        </div>
-
-        <script>
-            document.getElementById('uploadForm').addEventListener('submit', async (e) => {
-                e.preventDefault();
-                
-                // Reset UI
-                document.getElementById('errorAlert').classList.add('d-none');
-                document.getElementById('resultSection').classList.add('d-none');
-                document.getElementById('loading').style.display = 'block';
-                document.getElementById('submitBtn').disabled = true;
-                document.getElementById('spinner').classList.remove('d-none');
-                document.getElementById('submitText').textContent = 'Processando...';
-                
-                try {
-                    const formData = new FormData(e.target);
-                    const response = await fetch('/api/process_cte', {
-                        method: 'POST',
-                        body: formData
-                    });
-
-                    if (!response.ok) {
-                        const error = await response.json();
-                        throw new Error(error.error || 'Erro desconhecido');
-                    }
-
-                    const blob = await response.blob();
-                    const url = URL.createObjectURL(blob);
-                    
-                    document.getElementById('downloadLink').href = url;
-                    document.getElementById('downloadLink').download = 
-                        `CTe_${new Date().toISOString().slice(0,10)}.xlsx`;
-                    
-                    document.getElementById('resultSection').classList.remove('d-none');
-                } catch (error) {
-                    const errorAlert = document.getElementById('errorAlert');
-                    errorAlert.textContent = error.message;
-                    errorAlert.classList.remove('d-none');
-                } finally {
-                    document.getElementById('loading').style.display = 'none';
-                    document.getElementById('submitBtn').disabled = false;
-                    document.getElementById('spinner').classList.add('d-none');
-                    document.getElementById('submitText').textContent = 'Processar';
-                }
-            });
-        </script>
-        <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    </body>
-    </html>
-    ''')
-
-@app.route('/api/process_cte', methods=['POST'])
-def api_process_cte():
-    """Endpoint para processamento do CT-e"""
-    try:
-        # Validação do arquivo
-        if 'file' not in request.files:
+@app.route('/', methods=['GET', 'POST'])
+def index():
+    if request.method == 'POST':
+        if 'arquivos' not in request.files:
             return jsonify({'error': 'Nenhum arquivo enviado'}), 400
         
-        file = request.files['file']
-        if not file.filename.lower().endswith('.xml'):
-            return jsonify({'error': 'Formato inválido. Envie um XML'}), 400
-        
-        # Processamento
-        xml_data = file.read()
-        if not xml_data:
-            return jsonify({'error': 'Arquivo vazio'}), 400
-            
-        parsed_data = parse_cte(xml_data)
-        if 'error' in parsed_data:
-            return jsonify(parsed_data), 400
-        
-        excel_file = generate_excel(parsed_data)
-        if not excel_file:
-            return jsonify({'error': 'Falha ao gerar planilha'}), 500
-        
-        # Nome do arquivo de saída
-        filename = f"CTe_{parsed_data.get('Número CT-e', '')}_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
-        
+        arquivos = request.files.getlist('arquivos')
+        if not arquivos or all(f.filename == '' for f in arquivos):
+            return jsonify({'error': 'Nenhum arquivo selecionado'}), 400
+
+        if cte_processor.processar_arquivos(arquivos):
+            # Converter DataFrame para JSON
+            resultados_json = cte_processor.resultados_df.to_dict(orient='records')
+            return jsonify({
+                'success': True,
+                'message': f'Processados {len(resultados_json)} arquivos CT-e',
+                'data': resultados_json,
+                'columns': list(cte_processor.resultados_df.columns)
+            })
+        else:
+            return jsonify({'error': 'Nenhum dado válido encontrado nos arquivos'}), 400
+
+    return render_template('index.html')
+
+@app.route('/download', methods=['GET'])
+def download():
+    if cte_processor.resultados_df.empty:
+        return jsonify({'error': 'Nenhum dado para exportar'}), 400
+    
+    try:
+        output = cte_processor.exportar_excel()
         return send_file(
-            excel_file,
+            output,
             mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             as_attachment=True,
-            download_name=filename
+            download_name=f"CTe_Resultados_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
         )
-        
     except Exception as e:
-        logger.error(f"Erro na API: {str(e)}")
-        return jsonify({'error': f'Erro interno: {str(e)}'}), 500
+        return jsonify({'error': f'Não foi possível gerar o arquivo: {str(e)}'}), 500
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(debug=True)
