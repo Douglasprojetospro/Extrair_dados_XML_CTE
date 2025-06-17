@@ -108,7 +108,7 @@ def app():
                 
                 # Opção de exportar para Excel
                 excel_data = BytesIO()
-                with pd.ExcelWriter(excel_data, engine="xlsxwriter") as writer:
+                with pd.ExcelWriter(excel_data, engine="openpyxl") as writer:
                     relatorio.to_excel(writer, index=False)
                 st.sidebar.download_button(
                     label="Baixar Relatório (Excel)",
