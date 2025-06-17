@@ -1,80 +1,171 @@
-from flask import Flask, request, send_file, jsonify
+from flask import Flask, request, send_file, jsonify, render_template_string
 from lxml import etree
 import pandas as pd
 from io import BytesIO
 import os
+from datetime import datetime
 
 app = Flask(__name__)
 
-def parse_cte(xml_content):
-    """Extrai dados do CT-e XML"""
-    try:
-        root = etree.fromstring(xml_content)
-        ns = {'cte': 'http://www.portalfiscal.inf.br/cte'}
+# [...] (Manter as funções parse_cte e generate_excel existentes)
+
+@app.route('/')
+def home():
+    return render_template_string('''
+    <!DOCTYPE html>
+    <html lang="pt-BR">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Sistema de Processamento de CT-e</title>
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+        <style>
+            .container {
+                max-width: 800px;
+                margin-top: 50px;
+            }
+            .logo {
+                text-align: center;
+                margin-bottom: 30px;
+            }
+            .card {
+                border-radius: 10px;
+                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            }
+            .btn-primary {
+                background-color: #2c3e50;
+                border-color: #2c3e50;
+            }
+            .loading {
+                display: none;
+                text-align: center;
+                margin: 20px 0;
+            }
+            .result-container {
+                display: none;
+                margin-top: 30px;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="logo">
+                <h1 class="text-primary">📄 Processador de CT-e</h1>
+                <p class="text-muted">Sistema profissional para extração de dados de Conhecimento de Transporte Eletrônico</p>
+            </div>
+            
+            <div class="card">
+                <div class="card-body">
+                    <h5 class="card-title">Envie seu arquivo CT-e</h5>
+                    <form id="uploadForm" action="/api/process_cte" method="post" enctype="multipart/form-data">
+                        <div class="mb-3">
+                            <input class="form-control" type="file" name="file" accept=".xml" required>
+                            <div class="form-text">Apenas arquivos XML no formato CT-e</div>
+                        </div>
+                        <button type="submit" class="btn btn-primary w-100">
+                            <span id="submitText">Processar CT-e</span>
+                            <span id="spinner" class="spinner-border spinner-border-sm" role="status" aria-hidden="true" style="display: none;"></span>
+                        </button>
+                    </form>
+                </div>
+            </div>
+
+            <div id="loading" class="loading">
+                <div class="spinner-border text-primary" role="status">
+                    <span class="visually-hidden">Processando...</span>
+                </div>
+                <p class="mt-2">Processando seu arquivo, por favor aguarde...</p>
+            </div>
+
+            <div id="resultContainer" class="result-container card">
+                <div class="card-body">
+                    <h5 class="card-title text-success">Processamento concluído!</h5>
+                    <p>Seu arquivo foi processado com sucesso.</p>
+                    <a id="downloadBtn" href="#" class="btn btn-success w-100">
+                        <i class="bi bi-download"></i> Baixar Planilha
+                    </a>
+                </div>
+            </div>
+        </div>
+
+        <script>
+            document.getElementById('uploadForm').addEventListener('submit', function(e) {
+                e.preventDefault();
+                
+                // Mostrar loading
+                document.getElementById('loading').style.display = 'block';
+                document.getElementById('submitText').textContent = 'Processando...';
+                document.getElementById('spinner').style.display = 'inline-block';
+                
+                // Enviar o formulário via AJAX
+                const formData = new FormData(this);
+                fetch(this.action, {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(response => {
+                    if (!response.ok) throw new Error('Erro no processamento');
+                    return response.blob();
+                })
+                .then(blob => {
+                    // Esconder loading
+                    document.getElementById('loading').style.display = 'none';
+                    
+                    // Criar link para download
+                    const url = window.URL.createObjectURL(blob);
+                    document.getElementById('downloadBtn').href = url;
+                    
+                    // Mostrar resultado
+                    document.getElementById('resultContainer').style.display = 'block';
+                    document.getElementById('submitText').textContent = 'Processar outro CT-e';
+                    document.getElementById('spinner').style.display = 'none';
+                })
+                .catch(error => {
+                    document.getElementById('loading').style.display = 'none';
+                    document.getElementById('submitText').textContent = 'Processar CT-e';
+                    document.getElementById('spinner').style.display = 'none';
+                    alert('Erro: ' + error.message);
+                });
+            });
+        </script>
         
-        inf_cte = root.find('.//cte:infCte', namespaces=ns)
-        prot_cte = root.find('.//cte:infProt', namespaces=ns)
+        <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    </body>
+    </html>
+    ''')
 
-        # Função auxiliar para extração segura
-        def safe_get(element, path):
-            if element is None:
-                return ''
-            found = element.find(path, namespaces=ns)
-            return found.text if found is not None else ''
-
-        # Dados básicos
-        ide = inf_cte.find('.//cte:ide', namespaces=ns)
-        emit = inf_cte.find('.//cte:emit', namespaces=ns)
-        rem = inf_cte.find('.//cte:rem', namespaces=ns) or inf_cte.find('.//cte:exped', namespaces=ns)
-        dest = inf_cte.find('.//cte:dest', namespaces=ns) or inf_cte.find('.//cte:receb', namespaces=ns)
-        inf_carga = inf_cte.find('.//cte:infCarga', namespaces=ns)
-        v_prest = inf_cte.find('.//cte:vPrest', namespaces=ns)
-
-        # Valor do frete - VERSÃO CORRIGIDA
-        frete_valor = ''
-        if v_prest is not None:
-            for comp in v_prest.findall('.//cte:Comp', namespaces=ns):
-                nome_comp = comp.find('.//cte:xNome', namespaces=ns)
-                if nome_comp is not None and nome_comp.text == 'FRETE VALOR':
-                    valor_comp = comp.find('.//cte:vComp', namespaces=ns)
-                    frete_valor = valor_comp.text if valor_comp is not None else ''
-                    break
-
-        # Peso (kg)
-        peso = ''
-        if inf_carga is not None:
-            for inf_q in inf_carga.findall('.//cte:infQ', namespaces=ns):
-                if safe_get(inf_q, './/cte:tpMed') == 'PESO REAL':
-                    peso = safe_get(inf_q, './/cte:qCarga')
-                    break
-
-        return {
-            'Número CT-e': safe_get(ide, './/cte:nCT'),
-            'Chave CT-e': safe_get(prot_cte, './/cte:chCTe'),
-            'CNPJ Emitente': safe_get(emit, './/cte:CNPJ'),
-            'Nome Emitente': safe_get(emit, './/cte:xNome'),
-            'CEP Emitente': safe_get(emit, './/cte:enderEmit/cte:CEP'),
-            'Cidade Emitente': safe_get(emit, './/cte:enderEmit/cte:xMun'),
-            'UF Emitente': safe_get(emit, './/cte:enderEmit/cte:UF'),
-            'CNPJ Remetente': safe_get(rem, './/cte:CNPJ'),
-            'Nome Remetente': safe_get(rem, './/cte:xNome'),
-            'CEP Remetente': safe_get(rem, './/cte:enderReme/cte:CEP') or safe_get(rem, './/cte:enderExped/cte:CEP'),
-            'Cidade Remetente': safe_get(rem, './/cte:enderReme/cte:xMun') or safe_get(rem, './/cte:enderExped/cte:xMun'),
-            'UF Remetente': safe_get(rem, './/cte:enderReme/cte:UF') or safe_get(rem, './/cte:enderExped/cte:UF'),
-            'CNPJ Destinatário': safe_get(dest, './/cte:CNPJ'),
-            'Nome Destinatário': safe_get(dest, './/cte:xNome'),
-            'CEP Destinatário': safe_get(dest, './/cte:enderDest/cte:CEP') or safe_get(dest, './/cte:enderReceb/cte:CEP'),
-            'Cidade Destinatário': safe_get(dest, './/cte:enderDest/cte:xMun') or safe_get(dest, './/cte:enderReceb/cte:xMun'),
-            'UF Destinatário': safe_get(dest, './/cte:enderDest/cte:UF') or safe_get(dest, './/cte:enderReceb/cte:UF'),
-            'Valor Carga': safe_get(inf_carga, './/cte:vCarga'),
-            'Valor Frete': frete_valor,
-            'Chave Carga': safe_get(inf_cte, './/cte:infDoc/cte:infNFe/cte:chave'),
-            'Peso (kg)': peso,
-            'Data Emissão': safe_get(ide, './/cte:dhEmi'),
-            'Status': safe_get(prot_cte, './/cte:xMotivo')
-        }
-
+@app.route('/api/process_cte', methods=['POST'])
+def process_cte():
+    """Endpoint para processar CT-e"""
+    if 'file' not in request.files:
+        return jsonify({'error': 'Nenhum arquivo enviado'}), 400
+    
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'error': 'Nome de arquivo vazio'}), 400
+    
+    if not file.filename.lower().endswith('.xml'):
+        return jsonify({'error': 'Formato inválido. Envie um XML'}), 400
+    
+    try:
+        data = parse_cte(file.read())
+        if 'error' in data:
+            return jsonify(data), 400
+        
+        excel_file = generate_excel(data)
+        if not excel_file:
+            return jsonify({'error': 'Falha ao gerar Excel'}), 500
+        
+        return send_file(
+            excel_file,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            as_attachment=True,
+            download_name=f"CTe_{data.get('Número CT-e', '')}_{datetime.now().strftime('%Y%m%d')}.xlsx"
+        )
+    
     except Exception as e:
-        return {'error': f'Erro ao processar XML: {str(e)}'}
+        return jsonify({'error': str(e)}), 500
 
-# ... [o resto do arquivo permanece igual]
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
