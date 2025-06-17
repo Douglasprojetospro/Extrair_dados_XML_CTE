@@ -16,6 +16,7 @@ st.markdown("""
         .stFileUploader>div>div>button {background-color: #FF9800; color: white;}
         .report-title {color: #2c3e50; text-align: center;}
         .sidebar .sidebar-content {background-color: #e9ecef;}
+        .metric-box {border-radius: 5px; padding: 10px; background-color: white; box-shadow: 0 2px 5px rgba(0,0,0,0.1);}
     </style>
 """, unsafe_allow_html=True)
 
@@ -113,7 +114,9 @@ def gerar_relatorio(dados):
 def formatar_excel(writer, df):
     """Formata o arquivo Excel com estilos e organização"""
     workbook = writer.book
-    worksheet = writer.sheets['Sheet1']
+    # Obtém o nome da primeira planilha
+    worksheet_name = writer.sheets.sheetnames[0]
+    worksheet = writer.sheets[worksheet_name]
     
     # Formatação para cabeçalho
     header_format = workbook.add_format({
@@ -131,6 +134,9 @@ def formatar_excel(writer, df):
     # Formatação para datas
     date_format = workbook.add_format({'num_format': 'dd/mm/yyyy hh:mm:ss'})
     
+    # Formatação para números decimais
+    decimal_format = workbook.add_format({'num_format': '#,##0.000'})
+    
     # Aplicar formatações
     for col_num, value in enumerate(df.columns.values):
         worksheet.write(0, col_num, value, header_format)
@@ -141,18 +147,21 @@ def formatar_excel(writer, df):
         worksheet.set_column(i, i, max_len)
     
     # Formatar colunas específicas
-    money_cols = ['Valor Carga (R$)', 'Valor Frete (R$)']
-    date_cols = ['Data Emissão']
+    money_cols = [col for col in ['Valor Carga (R$)', 'Valor Frete (R$)'] if col in df.columns]
+    date_cols = [col for col in ['Data Emissão'] if col in df.columns]
+    decimal_cols = [col for col in ['Peso (kg)'] if col in df.columns]
     
     for col in money_cols:
-        if col in df.columns:
-            col_idx = df.columns.get_loc(col)
-            worksheet.set_column(col_idx, col_idx, 15, money_format)
+        col_idx = df.columns.get_loc(col)
+        worksheet.set_column(col_idx, col_idx, 15, money_format)
     
     for col in date_cols:
-        if col in df.columns:
-            col_idx = df.columns.get_loc(col)
-            worksheet.set_column(col_idx, col_idx, 20, date_format)
+        col_idx = df.columns.get_loc(col)
+        worksheet.set_column(col_idx, col_idx, 20, date_format)
+    
+    for col in decimal_cols:
+        col_idx = df.columns.get_loc(col)
+        worksheet.set_column(col_idx, col_idx, 15, decimal_format)
 
 def app():
     """Função principal que roda a aplicação Streamlit"""
@@ -188,14 +197,21 @@ def app():
             final_df = pd.concat(relatorios, ignore_index=True)
             
             # Exibir relatório com tabs
-            tab1, tab2 = st.tabs(["Visualização", "Dados Completos"])
+            tab1, tab2 = st.tabs(["📊 Visualização", "🔍 Dados Completos"])
             
             with tab1:
                 st.subheader("Resumo dos CT-es Processados")
+                
+                # Métricas
                 cols = st.columns(3)
-                cols[0].metric("Total CT-es", len(final_df))
-                cols[1].metric("CT-es Autorizados", final_df['Status'].value_counts().get('Autorizado', 0))
-                cols[2].metric("Valor Total Frete (R$)", f"{final_df['Valor Frete (R$)'].sum():,.2f}")
+                with cols[0]:
+                    st.markdown('<div class="metric-box"><h3>Total CT-es</h3><p style="font-size: 24px;">{}</p></div>'.format(len(final_df)), unsafe_allow_html=True)
+                with cols[1]:
+                    st.markdown('<div class="metric-box"><h3>CT-es Autorizados</h3><p style="font-size: 24px;">{}</p></div>'.format(
+                        final_df['Status'].value_counts().get('Autorizado', 0)), unsafe_allow_html=True)
+                with cols[2]:
+                    st.markdown('<div class="metric-box"><h3>Valor Total Frete</h3><p style="font-size: 24px;">R$ {:,.2f}</p></div>'.format(
+                        final_df['Valor Frete (R$)'].sum()), unsafe_allow_html=True)
                 
                 # Filtros interativos
                 with st.expander("🔍 Filtros", expanded=False):
@@ -218,14 +234,18 @@ def app():
                 ]
                 
                 st.dataframe(filtered_df.style.format({
-                    'Valor Carga (R$)': '{:,.2f}',
-                    'Valor Frete (R$)': '{:,.2f}',
-                    'Peso (kg)': '{:,.3f}'
+                    'Valor Carga (R$)': 'R$ {:,.2f}',
+                    'Valor Frete (R$)': 'R$ {:,.2f}',
+                    'Peso (kg)': '{:,.3f} kg'
                 }), height=400, use_container_width=True)
             
             with tab2:
                 st.subheader("Dados Completos")
-                st.dataframe(final_df, height=600, use_container_width=True)
+                st.dataframe(final_df.style.format({
+                    'Valor Carga (R$)': 'R$ {:,.2f}',
+                    'Valor Frete (R$)': 'R$ {:,.2f}',
+                    'Peso (kg)': '{:,.3f} kg'
+                }), height=600, use_container_width=True)
             
             # Opção de exportar para Excel
             st.sidebar.markdown("---")
