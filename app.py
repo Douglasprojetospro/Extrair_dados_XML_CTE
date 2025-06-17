@@ -8,7 +8,7 @@ from io import BytesIO
 class CTeProcessor:
     def __init__(self):
         self.setup_ui()
-        
+
     def formatar_cnpj(self, cnpj):
         """Formata CNPJ com pontuação"""
         if cnpj and len(cnpj) == 14:
@@ -28,14 +28,14 @@ class CTeProcessor:
                 data = datetime.strptime(data_str.split('T')[0], "%Y-%m-%d")
                 return data.strftime("%d/%m/%Y")
             return data_str
-        except:
+        except Exception:
             return data_str
 
     def formatar_moeda(self, valor):
         """Formata valores para o padrão monetário brasileiro"""
         try:
             return f"R$ {float(valor):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-        except:
+        except Exception:
             return "R$ 0,00"
 
     def processar_cte(self, xml_path):
@@ -67,7 +67,7 @@ class CTeProcessor:
                     if qCarga is not None:
                         try:
                             peso = max(peso, float(qCarga.text))
-                        except:
+                        except ValueError:
                             pass
 
             # Status do CT-e
@@ -107,21 +107,21 @@ class CTeProcessor:
         """Processa todos os arquivos XML em uma pasta"""
         resultados = []
         xml_files = [f for f in os.listdir(pasta) if f.lower().endswith('.xml')]
-        
+
         if not xml_files:
             st.warning("Nenhum arquivo XML encontrado na pasta selecionada")
             return None
 
         progress_bar = st.progress(0)
         status_text = st.empty()
-        
+
         for i, xml_file in enumerate(xml_files):
             try:
                 caminho = os.path.join(pasta, xml_file)
                 dados = self.processar_cte(caminho)
                 if dados:
                     resultados.append(dados)
-                
+
                 # Atualizar progresso
                 progresso = (i + 1) / len(xml_files)
                 progress_bar.progress(progresso)
@@ -131,7 +131,7 @@ class CTeProcessor:
 
         progress_bar.empty()
         status_text.empty()
-        
+
         if resultados:
             df = pd.DataFrame(resultados)
             st.success(f"Processados {len(resultados)} arquivos CT-e com sucesso!")
@@ -147,12 +147,12 @@ class CTeProcessor:
             df.to_excel(writer, index=False, sheet_name='CTes Processados')
             workbook = writer.book
             worksheet = writer.sheets['CTes Processados']
-            
+
             # Ajustar largura das colunas
             for i, col in enumerate(df.columns):
                 max_len = max(df[col].astype(str).map(len).max(), len(col)) + 2
                 worksheet.set_column(i, i, max_len)
-        
+
         processed_data = output.getvalue()
         return processed_data
 
@@ -164,14 +164,14 @@ class CTeProcessor:
             layout="wide",
             initial_sidebar_state="expanded"
         )
-        
+
         st.title("📄 Processador de Arquivos CT-e")
         st.markdown("""
         Esta aplicação processa arquivos XML de Conhecimento de Transporte Eletrônico (CT-e) e extrai os dados principais para análise.
         """)
-        
+
         st.sidebar.header("Configurações")
-        
+
         # Upload de arquivos
         st.sidebar.subheader("1. Selecionar Arquivos")
         uploaded_files = st.sidebar.file_uploader(
@@ -179,16 +179,16 @@ class CTeProcessor:
             type=['xml'],
             accept_multiple_files=True
         )
-        
+
         # Ou selecionar pasta
         st.sidebar.subheader("Ou selecionar pasta")
         pasta = st.sidebar.text_input("Caminho da pasta com arquivos XML (para uso local):")
-        
+
         if st.sidebar.button("Processar Arquivos"):
             if uploaded_files or pasta:
                 with st.spinner("Processando arquivos..."):
                     resultados = []
-                    
+
                     # Processar arquivos enviados
                     if uploaded_files:
                         for uploaded_file in uploaded_files:
@@ -202,7 +202,7 @@ class CTeProcessor:
                                 os.remove(uploaded_file.name)  # Limpar arquivo temporário
                             except Exception as e:
                                 st.error(f"Erro ao processar {uploaded_file.name}: {str(e)}")
-                    
+
                     # Processar pasta local
                     if pasta and os.path.isdir(pasta):
                         df_pasta = self.processar_pasta(pasta)
@@ -217,10 +217,10 @@ class CTeProcessor:
                                 self.resultados_df = pd.DataFrame(resultados)
                     elif resultados:
                         self.resultados_df = pd.DataFrame(resultados)
-                    
+
                     if hasattr(self, 'resultados_df') and not self.resultados_df.empty:
                         st.session_state.df_processed = True
-                        
+
                         # Mostrar dados em tabela
                         st.subheader("Resultados do Processamento")
                         st.dataframe(
@@ -228,7 +228,7 @@ class CTeProcessor:
                             height=600,
                             use_container_width=True
                         )
-                        
+
                         # Mostrar estatísticas
                         st.subheader("Estatísticas")
                         col1, col2, col3 = st.columns(3)
@@ -244,7 +244,7 @@ class CTeProcessor:
                         st.warning("Nenhum dado válido foi processado.")
             else:
                 st.warning("Por favor, carregue arquivos XML ou informe um caminho de pasta válido.")
-        
+
         # Botão de exportação
         if hasattr(self, 'resultados_df') and not self.resultados_df.empty:
             st.sidebar.subheader("Exportar Resultados")
