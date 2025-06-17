@@ -42,12 +42,17 @@ def parse_cte(xml_content):
         
         # Valor do frete
         v_prest = inf_cte.find('.//cte:vPrest', namespaces=ns)
-        frete_comp = next((comp for comp in v_prest.findall('.//cte:Comp', namespaces=ns) 
-                          if comp.find('.//cte:xNome', namespaces=ns).text == 'FRETE VALOR'), None) if v_prest is not None else None
+        frete_comp = next(
+            (comp for comp in v_prest.findall('.//cte:Comp', namespaces=ns) 
+            if comp.find('.//cte:xNome', namespaces=ns).text == 'FRETE VALOR'
+        ) if v_prest is not None else None
         
         # Peso (pegando o primeiro PESO REAL encontrado)
-        peso = next((q.find('.//cte:qCarga', namespaces=ns).text 
-                    for q in inf_q if q.find('.//cte:tpMed', namespaces=ns).text == 'PESO REAL') if inf_q else None
+        peso = None
+        for q in inf_q:
+            if q.find('.//cte:tpMed', namespaces=ns).text == 'PESO REAL':
+                peso = q.find('.//cte:qCarga', namespaces=ns).text
+                break
         
         # Montagem do dicionário de dados
         data = {
