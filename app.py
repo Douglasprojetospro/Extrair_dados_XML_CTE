@@ -15,22 +15,20 @@ def parse_cte(xml_content):
         inf_cte = root.find('.//cte:infCte', namespaces=ns)
         prot_cte = root.find('.//cte:infProt', namespaces=ns)
 
-        # Dados básicos
-        ide = inf_cte.find('.//cte:ide', namespaces=ns)
-        emit = inf_cte.find('.//cte:emit', namespaces=ns)
-        rem = inf_cte.find('.//cte:rem', namespaces=ns)
-        dest = inf_cte.find('.//cte:dest', namespaces=ns)
-        inf_carga = inf_cte.find('.//cte:infCarga', namespaces=ns)
-        v_prest = inf_cte.find('.//cte:vPrest', namespaces=ns)
-
-        # Extração segura de dados
-        def safe_get(element, path, attr=None):
+        # Função auxiliar para extração segura
+        def safe_get(element, path):
             if element is None:
                 return ''
             found = element.find(path, namespaces=ns)
-            if found is None:
-                return ''
-            return found.text if attr is None else found.get(attr)
+            return found.text if found is not None else ''
+
+        # Dados básicos
+        ide = inf_cte.find('.//cte:ide', namespaces=ns)
+        emit = inf_cte.find('.//cte:emit', namespaces=ns)
+        rem = inf_cte.find('.//cte:rem', namespaces=ns) or inf_cte.find('.//cte:exped', namespaces=ns)
+        dest = inf_cte.find('.//cte:dest', namespaces=ns) or inf_cte.find('.//cte:receb', namespaces=ns)
+        inf_carga = inf_cte.find('.//cte:infCarga', namespaces=ns)
+        v_prest = inf_cte.find('.//cte:vPrest', namespaces=ns)
 
         # Valor do frete
         frete_valor = ''
@@ -58,14 +56,14 @@ def parse_cte(xml_content):
             'UF Emitente': safe_get(emit, './/cte:enderEmit/cte:UF'),
             'CNPJ Remetente': safe_get(rem, './/cte:CNPJ'),
             'Nome Remetente': safe_get(rem, './/cte:xNome'),
-            'CEP Remetente': safe_get(rem, './/cte:enderReme/cte:CEP'),
-            'Cidade Remetente': safe_get(rem, './/cte:enderReme/cte:xMun'),
-            'UF Remetente': safe_get(rem, './/cte:enderReme/cte:UF'),
+            'CEP Remetente': safe_get(rem, './/cte:enderReme/cte:CEP') or safe_get(rem, './/cte:enderExped/cte:CEP'),
+            'Cidade Remetente': safe_get(rem, './/cte:enderReme/cte:xMun') or safe_get(rem, './/cte:enderExped/cte:xMun'),
+            'UF Remetente': safe_get(rem, './/cte:enderReme/cte:UF') or safe_get(rem, './/cte:enderExped/cte:UF'),
             'CNPJ Destinatário': safe_get(dest, './/cte:CNPJ'),
             'Nome Destinatário': safe_get(dest, './/cte:xNome'),
-            'CEP Destinatário': safe_get(dest, './/cte:enderDest/cte:CEP'),
-            'Cidade Destinatário': safe_get(dest, './/cte:enderDest/cte:xMun'),
-            'UF Destinatário': safe_get(dest, './/cte:enderDest/cte:UF'),
+            'CEP Destinatário': safe_get(dest, './/cte:enderDest/cte:CEP') or safe_get(dest, './/cte:enderReceb/cte:CEP'),
+            'Cidade Destinatário': safe_get(dest, './/cte:enderDest/cte:xMun') or safe_get(dest, './/cte:enderReceb/cte:xMun'),
+            'UF Destinatário': safe_get(dest, './/cte:enderDest/cte:UF') or safe_get(dest, './/cte:enderReceb/cte:UF'),
             'Valor Carga': safe_get(inf_carga, './/cte:vCarga'),
             'Valor Frete': frete_valor,
             'Chave Carga': safe_get(inf_cte, './/cte:infDoc/cte:infNFe/cte:chave'),
@@ -82,26 +80,20 @@ def generate_excel(data):
     try:
         df = pd.DataFrame([data])
         
-        # Formatação de valores
-        numeric_cols = ['Valor Carga', 'Valor Frete', 'Peso (kg)']
-        for col in numeric_cols:
+        # Formatação de valores numéricos
+        for col in ['Valor Carga', 'Valor Frete', 'Peso (kg)']:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
         
-        # Cria arquivo Excel em memória
         output = BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             df.to_excel(writer, index=False, sheet_name='CT-e')
             
-            # Formatação
             workbook = writer.book
             worksheet = writer.sheets['CT-e']
             
-            # Formata cabeçalho
             header_format = workbook.add_format({
                 'bold': True,
-                'text_wrap': True,
-                'valign': 'top',
                 'fg_color': '#4472C4',
                 'font_color': 'white',
                 'border': 1
@@ -110,7 +102,6 @@ def generate_excel(data):
             for col_num, value in enumerate(df.columns.values):
                 worksheet.write(0, col_num, value, header_format)
             
-            # Ajusta largura das colunas
             for i, col in enumerate(df.columns):
                 max_len = max(df[col].astype(str).map(len).max(), len(col)) + 2
                 worksheet.set_column(i, i, max_len)
