@@ -3,3 +3,4 @@ lxml==4.9.3
 pandas==2.0.3
 openpyxl==3.1.2
 gunicorn==21.2.0
+numpy==1.24.3  # Versão compatível com pandas 2.0.3
