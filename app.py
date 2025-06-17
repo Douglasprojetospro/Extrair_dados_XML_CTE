@@ -2,6 +2,7 @@ import xml.etree.ElementTree as ET
 import pandas as pd
 import streamlit as st
 from io import BytesIO
+from concurrent.futures import ThreadPoolExecutor
 
 def processar_cte(xml_data):
     """Extrai os dados do CT-e do arquivo XML e retorna como um dicionário"""
@@ -90,34 +91,37 @@ def app():
     """)
 
     st.sidebar.header("Carregar Arquivo XML")
-    uploaded_file = st.sidebar.file_uploader("Escolha um arquivo XML", type=["xml"])
+    uploaded_files = st.sidebar.file_uploader("Escolha arquivos XML", type=["xml"], accept_multiple_files=True)
 
-    if uploaded_file:
-        st.sidebar.text(f"Arquivo Carregado: {uploaded_file.name}")
-        
-        # Processar o arquivo XML
-        xml_data = uploaded_file.read()
-        dados = processar_cte(xml_data)
-        
-        if dados:
-            # Gerar relatório
-            relatorio = gerar_relatorio(dados)
-            if relatorio is not None:
-                st.subheader("Relatório do CT-e")
-                st.dataframe(relatorio)
-                
-                # Opção de exportar para Excel
-                excel_data = BytesIO()
-                with pd.ExcelWriter(excel_data, engine="openpyxl") as writer:
-                    relatorio.to_excel(writer, index=False)
-                st.sidebar.download_button(
-                    label="Baixar Relatório (Excel)",
-                    data=excel_data.getvalue(),
-                    file_name=f"relatorio_cte_{uploaded_file.name}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+    if uploaded_files:
+        st.sidebar.text(f"Arquivos Carregados: {[file.name for file in uploaded_files]}")
+
+        # Processar os arquivos XML usando ThreadPoolExecutor para otimizar
+        with ThreadPoolExecutor() as executor:
+            xml_data_list = [file.read() for file in uploaded_files]
+            dados_list = list(executor.map(processar_cte, xml_data_list))
+
+        # Gerar relatório para cada arquivo processado
+        relatorios = [gerar_relatorio(dados) for dados in dados_list if dados]
+
+        # Combinar todos os relatórios em um único DataFrame
+        if relatorios:
+            final_df = pd.concat(relatorios, ignore_index=True)
+            st.subheader("Relatório do CT-e")
+            st.dataframe(final_df)
+            
+            # Opção de exportar para Excel
+            excel_data = BytesIO()
+            with pd.ExcelWriter(excel_data, engine="openpyxl") as writer:
+                final_df.to_excel(writer, index=False)
+            st.sidebar.download_button(
+                label="Baixar Relatório (Excel)",
+                data=excel_data.getvalue(),
+                file_name="relatorio_cte.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
         else:
-            st.warning("Erro ao processar o arquivo XML.")
+            st.warning("Erro ao processar os arquivos XML.")
             
 if __name__ == "__main__":
     app()
