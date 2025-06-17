@@ -1,11 +1,10 @@
-import pandas as pd
+from flask import Flask, request, jsonify, send_file
 from lxml import etree
+import pandas as pd
 from io import BytesIO
-import base64
-from datetime import datetime
 import os
-import psutil
-import streamlit as st
+
+app = Flask(__name__)
 
 def parse_cte(xml_content):
     """Extrai os dados do CT-e do XML"""
@@ -42,10 +41,12 @@ def parse_cte(xml_content):
         
         # Valor do frete
         v_prest = inf_cte.find('.//cte:vPrest', namespaces=ns)
-        frete_comp = next(
-            (comp for comp in v_prest.findall('.//cte:Comp', namespaces=ns) 
-            if comp.find('.//cte:xNome', namespaces=ns).text == 'FRETE VALOR'
-        ) if v_prest is not None else None
+        frete_comp = None
+        if v_prest is not None:
+            for comp in v_prest.findall('.//cte:Comp', namespaces=ns):
+                if comp.find('.//cte:xNome', namespaces=ns).text == 'FRETE VALOR':
+                    frete_comp = comp
+                    break
         
         # Peso (pegando o primeiro PESO REAL encontrado)
         peso = None
@@ -85,8 +86,7 @@ def parse_cte(xml_content):
         return data
     
     except Exception as e:
-        st.error(f"Erro ao processar XML: {str(e)}")
-        return None
+        return {'error': str(e)}
 
 def generate_excel(data):
     """Gera um arquivo Excel a partir dos dados"""
@@ -137,64 +137,47 @@ def generate_excel(data):
         return output
     
     except Exception as e:
-        st.error(f"Erro ao gerar Excel: {str(e)}")
         return None
 
-def main():
-    st.set_page_config(
-        page_title="Extrator de CT-e",
-        page_icon="📄",
-        layout="wide",
-        initial_sidebar_state="expanded"
-    )
+@app.route('/api/process_cte', methods=['POST'])
+def process_cte():
+    """Endpoint para processar CT-e"""
+    if 'file' not in request.files:
+        return jsonify({'error': 'Nenhum arquivo enviado'}), 400
     
-    st.title("📄 Extrator de Dados de CT-e")
-    st.markdown("""
-    Esta aplicação extrai informações de arquivos XML de Conhecimento de Transporte Eletrônico (CT-e) 
-    e gera um relatório em Excel com os dados estruturados.
-    """)
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'error': 'Nome de arquivo vazio'}), 400
     
-    # Mostra informações de memória
-    mem = psutil.virtual_memory()
-    st.sidebar.title("Informações do Sistema")
-    st.sidebar.write(f"**Memória total:** {mem.total / (1024**3):.2f} GB")
-    st.sidebar.write(f"**Memória disponível:** {mem.available / (1024**3):.2f} GB")
-    st.sidebar.write(f"**Uso de memória:** {mem.percent}%")
+    if not file.filename.lower().endswith('.xml'):
+        return jsonify({'error': 'Formato de arquivo inválido. Envie um XML'}), 400
     
-    # Upload do arquivo
-    uploaded_file = st.file_uploader("Carregue o arquivo XML do CT-e", type=['xml'])
+    try:
+        xml_content = file.read()
+        data = parse_cte(xml_content)
+        
+        if 'error' in data:
+            return jsonify(data), 400
+        
+        excel_file = generate_excel(data)
+        
+        if excel_file:
+            return send_file(
+                excel_file,
+                mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                as_attachment=True,
+                download_name=f"cte_{data.get('Número CT-e', '')}.xlsx"
+            )
+        else:
+            return jsonify({'error': 'Falha ao gerar Excel'}), 500
     
-    if uploaded_file is not None:
-        try:
-            # Lê o conteúdo do arquivo
-            xml_content = uploaded_file.read()
-            
-            # Processa o XML
-            with st.spinner("Processando CT-e..."):
-                data = parse_cte(xml_content)
-                
-                if data:
-                    st.success("CT-e processado com sucesso!")
-                    
-                    # Mostra pré-visualização dos dados
-                    st.subheader("Pré-visualização dos Dados")
-                    preview_df = pd.DataFrame([data])
-                    st.dataframe(preview_df)
-                    
-                    # Gera Excel
-                    with st.spinner("Gerando arquivo Excel..."):
-                        excel_file = generate_excel(data)
-                        
-                        if excel_file:
-                            # Cria botão de download
-                            st.download_button(
-                                label="📥 Baixar Relatório em Excel",
-                                data=excel_file,
-                                file_name=f"cte_{data.get('Número CT-e', '')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                            )
-        except Exception as e:
-            st.error(f"Erro ao processar arquivo: {str(e)}")
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
-if __name__ == "__main__":
-    main()
+@app.route('/')
+def index():
+    return "Serviço de extração de dados de CT-e. Envie um XML para /api/process_cte"
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
