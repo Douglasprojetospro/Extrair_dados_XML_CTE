@@ -1,2 +1,2 @@
 #!/bin/bash
-streamlit run app.py
+gunicorn app:app
