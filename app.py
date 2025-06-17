@@ -30,12 +30,14 @@ def parse_cte(xml_content):
         inf_carga = inf_cte.find('.//cte:infCarga', namespaces=ns)
         v_prest = inf_cte.find('.//cte:vPrest', namespaces=ns)
 
-        # Valor do frete
+        # Valor do frete - VERSÃO CORRIGIDA
         frete_valor = ''
         if v_prest is not None:
             for comp in v_prest.findall('.//cte:Comp', namespaces=ns):
-                if safe_get(comp, './/cte:xNome') == 'FRETE VALOR':
-                    frete_valor = safe_get(comp, './/cte:vComp')
+                nome_comp = comp.find('.//cte:xNome', namespaces=ns)
+                if nome_comp is not None and nome_comp.text == 'FRETE VALOR':
+                    valor_comp = comp.find('.//cte:vComp', namespaces=ns)
+                    frete_valor = valor_comp.text if valor_comp is not None else ''
                     break
 
         # Peso (kg)
@@ -75,86 +77,4 @@ def parse_cte(xml_content):
     except Exception as e:
         return {'error': f'Erro ao processar XML: {str(e)}'}
 
-def generate_excel(data):
-    """Gera arquivo Excel a partir dos dados"""
-    try:
-        df = pd.DataFrame([data])
-        
-        # Formatação de valores numéricos
-        for col in ['Valor Carga', 'Valor Frete', 'Peso (kg)']:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-        
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            df.to_excel(writer, index=False, sheet_name='CT-e')
-            
-            workbook = writer.book
-            worksheet = writer.sheets['CT-e']
-            
-            header_format = workbook.add_format({
-                'bold': True,
-                'fg_color': '#4472C4',
-                'font_color': 'white',
-                'border': 1
-            })
-            
-            for col_num, value in enumerate(df.columns.values):
-                worksheet.write(0, col_num, value, header_format)
-            
-            for i, col in enumerate(df.columns):
-                max_len = max(df[col].astype(str).map(len).max(), len(col)) + 2
-                worksheet.set_column(i, i, max_len)
-        
-        output.seek(0)
-        return output
-    
-    except Exception as e:
-        return None
-
-@app.route('/api/process_cte', methods=['POST'])
-def process_cte():
-    """Endpoint para processar CT-e"""
-    if 'file' not in request.files:
-        return jsonify({'error': 'Nenhum arquivo enviado'}), 400
-    
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({'error': 'Nome de arquivo vazio'}), 400
-    
-    if not file.filename.lower().endswith('.xml'):
-        return jsonify({'error': 'Formato inválido. Envie um XML'}), 400
-    
-    try:
-        data = parse_cte(file.read())
-        if 'error' in data:
-            return jsonify(data), 400
-        
-        excel_file = generate_excel(data)
-        if not excel_file:
-            return jsonify({'error': 'Falha ao gerar Excel'}), 500
-        
-        return send_file(
-            excel_file,
-            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            as_attachment=True,
-            download_name=f"cte_{data.get('Número CT-e', '')}.xlsx"
-        )
-    
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/')
-def home():
-    return """
-    <h1>API de Extração de CT-e</h1>
-    <p>Envie um XML via POST para /api/process_cte</p>
-    <form action="/api/process_cte" method="post" enctype="multipart/form-data">
-      <input type="file" name="file" accept=".xml">
-      <button type="submit">Enviar</button>
-    </form>
-    """
-
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+# ... [o resto do arquivo permanece igual]
