@@ -1,15 +1,16 @@
 import xml.etree.ElementTree as ET
 import pandas as pd
+import streamlit as st
+from io import BytesIO
 
-def processar_cte(xml_path):
+def processar_cte(xml_data):
     """Extrai os dados do CT-e do arquivo XML e retorna como um dicionário"""
     try:
         # Namespace utilizado no XML
         ns = {'cte': 'http://www.portalfiscal.inf.br/cte'}
         
         # Parse do XML
-        tree = ET.parse(xml_path)
-        root = tree.getroot()
+        root = ET.fromstring(xml_data)
 
         # Verifica se é um CT-e processado (cteProc)
         cte_proc = root.find('.//cte:CTe', ns) or root
@@ -70,20 +71,53 @@ def processar_cte(xml_path):
         return dados
 
     except Exception as e:
-        print(f"Erro ao processar o XML {xml_path}: {str(e)}")
+        st.error(f"Erro ao processar o XML: {str(e)}")
         return None
 
 def gerar_relatorio(dados):
     """Gera um relatório a partir dos dados extraídos"""
     if dados:
         df = pd.DataFrame([dados])
-        print(df)
         return df
     else:
-        print("Nenhum dado válido encontrado.")
         return None
 
-# Exemplo de uso
-xml_path = 'caminho/do/seu/arquivo.xml'
-dados = processar_cte(xml_path)
-relatorio = gerar_relatorio(dados)
+def app():
+    """Função principal que roda a aplicação Streamlit"""
+    st.title("📄 Processador de CT-e")
+    st.markdown("""
+    Esta aplicação processa arquivos XML de Conhecimento de Transporte Eletrônico (CT-e) e extrai os dados principais para análise.
+    """)
+
+    st.sidebar.header("Carregar Arquivo XML")
+    uploaded_file = st.sidebar.file_uploader("Escolha um arquivo XML", type=["xml"])
+
+    if uploaded_file:
+        st.sidebar.text(f"Arquivo Carregado: {uploaded_file.name}")
+        
+        # Processar o arquivo XML
+        xml_data = uploaded_file.read()
+        dados = processar_cte(xml_data)
+        
+        if dados:
+            # Gerar relatório
+            relatorio = gerar_relatorio(dados)
+            if relatorio is not None:
+                st.subheader("Relatório do CT-e")
+                st.dataframe(relatorio)
+                
+                # Opção de exportar para Excel
+                excel_data = BytesIO()
+                with pd.ExcelWriter(excel_data, engine="xlsxwriter") as writer:
+                    relatorio.to_excel(writer, index=False)
+                st.sidebar.download_button(
+                    label="Baixar Relatório (Excel)",
+                    data=excel_data.getvalue(),
+                    file_name=f"relatorio_cte_{uploaded_file.name}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+        else:
+            st.warning("Erro ao processar o arquivo XML.")
+            
+if __name__ == "__main__":
+    app()
