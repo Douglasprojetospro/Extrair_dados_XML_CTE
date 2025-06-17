@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, send_file, jsonify
 from lxml import etree
 import pandas as pd
 from io import BytesIO
@@ -7,103 +7,86 @@ import os
 app = Flask(__name__)
 
 def parse_cte(xml_content):
-    """Extrai os dados do CT-e do XML"""
+    """Extrai dados do CT-e XML"""
     try:
-        # Parse do XML
         root = etree.fromstring(xml_content)
-        
-        # Namespaces
         ns = {'cte': 'http://www.portalfiscal.inf.br/cte'}
         
-        # Dados básicos
         inf_cte = root.find('.//cte:infCte', namespaces=ns)
         prot_cte = root.find('.//cte:infProt', namespaces=ns)
-        
-        # Dados do emitente
-        emitente = inf_cte.find('.//cte:emit', namespaces=ns)
-        ender_emit = emitente.find('.//cte:enderEmit', namespaces=ns)
-        
-        # Dados do remetente
-        remetente = inf_cte.find('.//cte:rem', namespaces=ns)
-        ender_reme = remetente.find('.//cte:enderReme', namespaces=ns) if remetente is not None else None
-        
-        # Dados do destinatário
-        destinatario = inf_cte.find('.//cte:dest', namespaces=ns)
-        ender_dest = destinatario.find('.//cte:enderDest', namespaces=ns) if destinatario is not None else None
-        
-        # Dados da carga
+
+        # Dados básicos
+        ide = inf_cte.find('.//cte:ide', namespaces=ns)
+        emit = inf_cte.find('.//cte:emit', namespaces=ns)
+        rem = inf_cte.find('.//cte:rem', namespaces=ns)
+        dest = inf_cte.find('.//cte:dest', namespaces=ns)
         inf_carga = inf_cte.find('.//cte:infCarga', namespaces=ns)
-        inf_q = inf_carga.findall('.//cte:infQ', namespaces=ns) if inf_carga is not None else []
-        
-        # Dados do documento relacionado (NFe)
-        inf_doc = inf_cte.find('.//cte:infDoc', namespaces=ns)
-        inf_nfe = inf_doc.find('.//cte:infNFe', namespaces=ns) if inf_doc is not None else None
-        
-        # Valor do frete
         v_prest = inf_cte.find('.//cte:vPrest', namespaces=ns)
-        frete_comp = None
+
+        # Extração segura de dados
+        def safe_get(element, path, attr=None):
+            if element is None:
+                return ''
+            found = element.find(path, namespaces=ns)
+            if found is None:
+                return ''
+            return found.text if attr is None else found.get(attr)
+
+        # Valor do frete
+        frete_valor = ''
         if v_prest is not None:
             for comp in v_prest.findall('.//cte:Comp', namespaces=ns):
-                if comp.find('.//cte:xNome', namespaces=ns).text == 'FRETE VALOR':
-                    frete_comp = comp
+                if safe_get(comp, './/cte:xNome') == 'FRETE VALOR':
+                    frete_valor = safe_get(comp, './/cte:vComp')
                     break
-        
-        # Peso (pegando o primeiro PESO REAL encontrado)
-        peso = None
-        for q in inf_q:
-            if q.find('.//cte:tpMed', namespaces=ns).text == 'PESO REAL':
-                peso = q.find('.//cte:qCarga', namespaces=ns).text
-                break
-        
-        # Montagem do dicionário de dados
-        data = {
-            'Número CT-e': inf_cte.find('.//cte:nCT', namespaces=ns).text if inf_cte.find('.//cte:nCT', namespaces=ns) is not None else '',
-            'Chave CT-e': prot_cte.find('.//cte:chCTe', namespaces=ns).text if prot_cte is not None else '',
-            'CNPJ Emitente': emitente.find('.//cte:CNPJ', namespaces=ns).text if emitente.find('.//cte:CNPJ', namespaces=ns) is not None else '',
-            'Nome Emitente': emitente.find('.//cte:xNome', namespaces=ns).text if emitente.find('.//cte:xNome', namespaces=ns) is not None else '',
-            'CEP Emitente': ender_emit.find('.//cte:CEP', namespaces=ns).text if ender_emit is not None and ender_emit.find('.//cte:CEP', namespaces=ns) is not None else '',
-            'Cidade Emitente': ender_emit.find('.//cte:xMun', namespaces=ns).text if ender_emit is not None else '',
-            'UF Emitente': ender_emit.find('.//cte:UF', namespaces=ns).text if ender_emit is not None else '',
-            'CNPJ Remetente': remetente.find('.//cte:CNPJ', namespaces=ns).text if remetente is not None and remetente.find('.//cte:CNPJ', namespaces=ns) is not None else '',
-            'Nome Remetente': remetente.find('.//cte:xNome', namespaces=ns).text if remetente is not None else '',
-            'CEP Remetente': ender_reme.find('.//cte:CEP', namespaces=ns).text if ender_reme is not None and ender_reme.find('.//cte:CEP', namespaces=ns) is not None else '',
-            'Cidade Remetente': ender_reme.find('.//cte:xMun', namespaces=ns).text if ender_reme is not None else '',
-            'UF Remetente': ender_reme.find('.//cte:UF', namespaces=ns).text if ender_reme is not None else '',
-            'CNPJ Destinatário': destinatario.find('.//cte:CNPJ', namespaces=ns).text if destinatario is not None and destinatario.find('.//cte:CNPJ', namespaces=ns) is not None else '',
-            'Nome Destinatário': destinatario.find('.//cte:xNome', namespaces=ns).text if destinatario is not None else '',
-            'CEP Destinatário': ender_dest.find('.//cte:CEP', namespaces=ns).text if ender_dest is not None and ender_dest.find('.//cte:CEP', namespaces=ns) is not None else '',
-            'Cidade Destinatário': ender_dest.find('.//cte:xMun', namespaces=ns).text if ender_dest is not None else '',
-            'UF Destinatário': ender_dest.find('.//cte:UF', namespaces=ns).text if ender_dest is not None else '',
-            'Valor Carga': inf_carga.find('.//cte:vCarga', namespaces=ns).text if inf_carga is not None and inf_carga.find('.//cte:vCarga', namespaces=ns) is not None else '',
-            'Valor Frete': frete_comp.find('.//cte:vComp', namespaces=ns).text if frete_comp is not None else '',
-            'Chave Carga': inf_nfe.find('.//cte:chave', namespaces=ns).text if inf_nfe is not None else '',
-            'Número Carga': '',  # Não encontrado no XML de exemplo
+
+        # Peso (kg)
+        peso = ''
+        if inf_carga is not None:
+            for inf_q in inf_carga.findall('.//cte:infQ', namespaces=ns):
+                if safe_get(inf_q, './/cte:tpMed') == 'PESO REAL':
+                    peso = safe_get(inf_q, './/cte:qCarga')
+                    break
+
+        return {
+            'Número CT-e': safe_get(ide, './/cte:nCT'),
+            'Chave CT-e': safe_get(prot_cte, './/cte:chCTe'),
+            'CNPJ Emitente': safe_get(emit, './/cte:CNPJ'),
+            'Nome Emitente': safe_get(emit, './/cte:xNome'),
+            'CEP Emitente': safe_get(emit, './/cte:enderEmit/cte:CEP'),
+            'Cidade Emitente': safe_get(emit, './/cte:enderEmit/cte:xMun'),
+            'UF Emitente': safe_get(emit, './/cte:enderEmit/cte:UF'),
+            'CNPJ Remetente': safe_get(rem, './/cte:CNPJ'),
+            'Nome Remetente': safe_get(rem, './/cte:xNome'),
+            'CEP Remetente': safe_get(rem, './/cte:enderReme/cte:CEP'),
+            'Cidade Remetente': safe_get(rem, './/cte:enderReme/cte:xMun'),
+            'UF Remetente': safe_get(rem, './/cte:enderReme/cte:UF'),
+            'CNPJ Destinatário': safe_get(dest, './/cte:CNPJ'),
+            'Nome Destinatário': safe_get(dest, './/cte:xNome'),
+            'CEP Destinatário': safe_get(dest, './/cte:enderDest/cte:CEP'),
+            'Cidade Destinatário': safe_get(dest, './/cte:enderDest/cte:xMun'),
+            'UF Destinatário': safe_get(dest, './/cte:enderDest/cte:UF'),
+            'Valor Carga': safe_get(inf_carga, './/cte:vCarga'),
+            'Valor Frete': frete_valor,
+            'Chave Carga': safe_get(inf_cte, './/cte:infDoc/cte:infNFe/cte:chave'),
             'Peso (kg)': peso,
-            'Data Emissão': inf_cte.find('.//cte:dhEmi', namespaces=ns).text if inf_cte.find('.//cte:dhEmi', namespaces=ns) is not None else '',
-            'Status': prot_cte.find('.//cte:xMotivo', namespaces=ns).text if prot_cte is not None else ''
+            'Data Emissão': safe_get(ide, './/cte:dhEmi'),
+            'Status': safe_get(prot_cte, './/cte:xMotivo')
         }
-        
-        return data
-    
+
     except Exception as e:
-        return {'error': str(e)}
+        return {'error': f'Erro ao processar XML: {str(e)}'}
 
 def generate_excel(data):
-    """Gera um arquivo Excel a partir dos dados"""
+    """Gera arquivo Excel a partir dos dados"""
     try:
-        # Cria DataFrame
         df = pd.DataFrame([data])
         
-        # Formata colunas de valor
+        # Formatação de valores
         numeric_cols = ['Valor Carga', 'Valor Frete', 'Peso (kg)']
         for col in numeric_cols:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
-                df[col] = df[col].apply(lambda x: f"R$ {x:,.2f}" if pd.notna(x) else '')
-        
-        # Formata data
-        if 'Data Emissão' in df.columns:
-            df['Data Emissão'] = pd.to_datetime(df['Data Emissão']).dt.strftime('%d/%m/%Y %H:%M:%S')
         
         # Cria arquivo Excel em memória
         output = BytesIO()
@@ -124,7 +107,6 @@ def generate_excel(data):
                 'border': 1
             })
             
-            # Aplica formatação ao cabeçalho
             for col_num, value in enumerate(df.columns.values):
                 worksheet.write(0, col_num, value, header_format)
             
@@ -150,33 +132,37 @@ def process_cte():
         return jsonify({'error': 'Nome de arquivo vazio'}), 400
     
     if not file.filename.lower().endswith('.xml'):
-        return jsonify({'error': 'Formato de arquivo inválido. Envie um XML'}), 400
+        return jsonify({'error': 'Formato inválido. Envie um XML'}), 400
     
     try:
-        xml_content = file.read()
-        data = parse_cte(xml_content)
-        
+        data = parse_cte(file.read())
         if 'error' in data:
             return jsonify(data), 400
         
         excel_file = generate_excel(data)
-        
-        if excel_file:
-            return send_file(
-                excel_file,
-                mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                as_attachment=True,
-                download_name=f"cte_{data.get('Número CT-e', '')}.xlsx"
-            )
-        else:
+        if not excel_file:
             return jsonify({'error': 'Falha ao gerar Excel'}), 500
+        
+        return send_file(
+            excel_file,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            as_attachment=True,
+            download_name=f"cte_{data.get('Número CT-e', '')}.xlsx"
+        )
     
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 @app.route('/')
-def index():
-    return "Serviço de extração de dados de CT-e. Envie um XML para /api/process_cte"
+def home():
+    return """
+    <h1>API de Extração de CT-e</h1>
+    <p>Envie um XML via POST para /api/process_cte</p>
+    <form action="/api/process_cte" method="post" enctype="multipart/form-data">
+      <input type="file" name="file" accept=".xml">
+      <button type="submit">Enviar</button>
+    </form>
+    """
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
